@@ -24,7 +24,7 @@ export async function processMdx(source: string): Promise<string> {
   return code;
 }
 
-describe('Markdown inside JSX containers', () => {
+describe('Markdown containing executable MDX', () => {
   const releaseLink =
     '[Lynx 4.2.0](https://github.com/lynx-family/lynx/releases/tag/4.2.0)';
   const Container = ({ children }: { children?: ReactNode }) => children;
@@ -71,6 +71,96 @@ describe('Markdown inside JSX containers', () => {
       `${open}\n\n下载 <ReleaseLink />，版本 {version}。\n\n${close}`,
     );
     expect(markdown).toBe(`下载 ${releaseLink}，版本 4.2.0。`);
+  });
+
+  it.each([
+    ['paragraph', 'Download <ReleaseLink /> ({version}).'],
+    ['heading', '## Download <ReleaseLink /> ({version}).'],
+    ['list', '- Download <ReleaseLink /> ({version}).'],
+    ['strong', '**<ReleaseLink /> ({version})**'],
+    ['blockquote', '> Download <ReleaseLink /> ({version}).'],
+    ['nested list', '- Release\n  - **<ReleaseLink />** (_{version}_).'],
+    [
+      'mixed depths',
+      'Download <ReleaseLink /> and **<ReleaseLink /> ({version})**.',
+    ],
+    ['expression only', '> - Version **{version}**.'],
+    ['heading starting with JSX', '## <ReleaseLink />'],
+  ])('executes MDX in a root %s and a container', async (_name, source) => {
+    const expected = source
+      .replaceAll('<ReleaseLink />', releaseLink)
+      .replaceAll('{version}', '4.2.0');
+    const rootMarkdown = await renderMdx(source);
+    const containerMarkdown = await renderMdx(
+      `<Container>\n\n${source}\n\n</Container>`,
+    );
+    expect(rootMarkdown).toBe(containerMarkdown);
+    expect(rootMarkdown).toBe(expected);
+  });
+
+  it('executes MDX in a root table and a container', async () => {
+    const source =
+      '| Download | Version |\n| --- | --- |\n| <ReleaseLink /> | {version} |';
+    const markdown = await renderMdx(source);
+    expect(markdown).toBe(
+      await renderMdx(`<Container>\n\n${source}\n\n</Container>`),
+    );
+    // Compare cell structure independently of the serializer's table padding.
+    const parse = (value: string) =>
+      unified().use(remarkParse).use(remarkGfm).parse(value);
+    const withoutPositions = (tree: unknown) =>
+      JSON.parse(
+        JSON.stringify(tree, (key, value) =>
+          key === 'position' ? undefined : value,
+        ),
+      );
+    expect(withoutPositions(parse(markdown))).toEqual(
+      withoutPositions(
+        parse(
+          `| Download | Version |\n| --- | --- |\n| ${releaseLink} | 4.2.0 |`,
+        ),
+      ),
+    );
+  });
+
+  it('preserves root block spacing around executable MDX', async () => {
+    expect(
+      await renderMdx(`## <ReleaseLink />
+
+First {version}.
+
+Second **<ReleaseLink />**.
+
+- Download <ReleaseLink />.
+
+> Version {version}.`),
+    ).toBe(`## ${releaseLink}
+
+First 4.2.0.
+
+Second **${releaseLink}**.
+
+- Download ${releaseLink}.
+
+> Version 4.2.0.`);
+  });
+
+  it('keeps root code examples literal beside nested executable MDX', async () => {
+    expect(
+      await renderMdx(`Example: \`<ReleaseLink /> {version}\`.
+
+\`\`\`mdx
+<ReleaseLink /> {version}
+\`\`\`
+
+> Actual: **<ReleaseLink />** {version}.`),
+    ).toBe(`Example: \`<ReleaseLink /> {version}\`.
+
+\`\`\`mdx
+<ReleaseLink /> {version}
+\`\`\`
+
+> Actual: **${releaseLink}** 4.2.0.`);
   });
 
   it('preserves Markdown formatting and paragraph spacing', async () => {
@@ -143,12 +233,21 @@ Actual: ${releaseLink} 4.2.0.`);
       excludes: [[['Drop'], '@components']],
     },
   ];
+  const inlineFilterLocations = inlineFilters.flatMap(options => [
+    { location: 'root', open: '', close: '', options },
+    {
+      location: 'container',
+      open: '<Container>',
+      close: '</Container>',
+      options,
+    },
+  ]);
 
-  it.each(inlineFilters)(
+  it.each(inlineFilterLocations)(
     'preserves table rows and columns around filtered inline JSX: %j',
-    async options => {
+    async ({ open, close, options }) => {
       const markdown = await renderMdx(
-        `<Container>
+        `${open}
 
 | 下载 | 说明 |
 | --- | --- |
@@ -158,7 +257,7 @@ Actual: ${releaseLink} 4.2.0.`);
 | <Inline>before <Drop /> after</Inline> | 保留父组件 |
 | 普通行 | <Drop /> |
 
-</Container>`,
+${close}`,
         options,
       );
       const tree = unified().use(remarkParse).use(remarkGfm).parse(markdown);
@@ -183,16 +282,16 @@ Actual: ${releaseLink} 4.2.0.`);
     },
   );
 
-  it.each(inlineFilters)(
+  it.each(inlineFilterLocations)(
     'preserves punctuation and spaces around filtered inline JSX: %j',
-    async options => {
+    async ({ open, close, options }) => {
       expect(
         await renderMdx(
-          `<Container>
+          `${open}
 
 下载 <Drop />，版本 {version}；<Drop>before <Keep /> after</Drop>。强调 **<Drop />**。
 
-</Container>`,
+${close}`,
           options,
         ),
       ).toBe(
@@ -201,29 +300,38 @@ Actual: ${releaseLink} 4.2.0.`);
     },
   );
 
-  it('keeps imported MDX fragments executable inside filtered table cells', async () => {
-    const result = String(
-      await compile(
-        `import Fragment from './fragment.mdx';
+  it.each([
+    ['root', '', ''],
+    ['container', '<Container>', '</Container>'],
+  ])(
+    'keeps imported MDX fragments executable inside filtered %s table cells',
+    async (_name, open, close) => {
+      const result = String(
+        await compile(
+          `import Fragment from './fragment.mdx';
 
-<Container>
+${open}
 
 | 下载 | 说明 |
 | --- | --- |
 | <Fragment /> | 示例 |
 
-</Container>`,
-        {
-          remarkPlugins: [
-            remarkGfm,
-            [remarkSplitMdx, { excludes: [[['Fragment'], './fragment.mdx']] }],
-          ],
-          jsx: true,
-        },
-      ),
-    );
-    expect(result).toContain('"}<Fragment />{" | 示例 |\\n"}');
-  });
+${close}`,
+          {
+            remarkPlugins: [
+              remarkGfm,
+              [
+                remarkSplitMdx,
+                { excludes: [[['Fragment'], './fragment.mdx']] },
+              ],
+            ],
+            jsx: true,
+          },
+        ),
+      );
+      expect(result).toContain('"}<Fragment />{" | 示例 |\\n"}');
+    },
+  );
 
   it('preserves authored whitespace inside inline containers', async () => {
     expect(
@@ -485,7 +593,7 @@ export function Thing() {
         return <>World</>;
       }
       function _createMdxContent(props) {
-        return <><>{"# Hello "}<Thing />{" "}{a}</>{"\\n"}{a}</>;
+        return <><>{"# Hello "}<Thing />{" "}{a}{"\\n"}</>{"\\n"}{a}</>;
       }
       export default function MDXContent(props = {}) {
         const {wrapper: MDXLayout} = props.components || ({});
@@ -517,7 +625,7 @@ export function Thing() {
         return <>World</>;
       }
       function _createMdxContent(props) {
-        return <><>{"# Hello "}<Badge />{" "}<Thing />{" "}{a}</>{"\\n"}{a}</>;
+        return <><>{"# Hello "}<Badge />{" "}<Thing />{" "}{a}{"\\n"}</>{"\\n"}{a}</>;
       }
       export default function MDXContent(props = {}) {
         const {wrapper: MDXLayout} = props.components || ({});
@@ -536,7 +644,7 @@ export function Thing() {
       "/*@jsxRuntime automatic*/
       /*@jsxImportSource react*/
       function _createMdxContent(props) {
-        return <><>{"# hello "}{window.foo}</></>;
+        return <><>{"# hello "}{window.foo}{"\\n"}</></>;
       }
       export default function MDXContent(props = {}) {
         const {wrapper: MDXLayout} = props.components || ({});
@@ -555,7 +663,7 @@ export function Thing() {
       "/*@jsxRuntime automatic*/
       /*@jsxImportSource react*/
       function _createMdxContent(props) {
-        return <><>{"Hello "}{window.foo}</></>;
+        return <><>{"Hello "}{window.foo}{"\\n"}</></>;
       }
       export default function MDXContent(props = {}) {
         const {wrapper: MDXLayout} = props.components || ({});
@@ -868,7 +976,7 @@ Some text here.`;
       /*@jsxImportSource react*/
       import Foo from '@components';
       function _createMdxContent(props) {
-        return <><>{"# title "}<Foo /></>{"\\n"}{"# title [link](./link)\\n"}{"\\n"}<>{"# title [link](./link)\\n "}<Foo /></>{"\\n"}{"Some text here.\\n"}</>;
+        return <><>{"# title "}<Foo />{"\\n"}</>{"\\n"}{"# title [link](./link)\\n"}{"\\n"}<>{"# title [link](./link) "}<Foo />{"\\n"}</>{"\\n"}{"Some text here.\\n"}</>;
       }
       export default function MDXContent(props = {}) {
         const {wrapper: MDXLayout} = props.components || ({});
@@ -890,7 +998,7 @@ This is a <Button>click me</Button> and <Link href="/test">link</Link> example.`
       /*@jsxImportSource react*/
       import {Button, Link} from '@components';
       function _createMdxContent(props) {
-        return <><>{"This is a "}<Button>{"click me"}</Button>{" and "}<Link href="/test">{"link"}</Link>{" example."}</></>;
+        return <><>{"This is a "}<Button>{"click me"}</Button>{" and "}<Link href="/test">{"link"}</Link>{" example.\\n"}</></>;
       }
       export default function MDXContent(props = {}) {
         const {wrapper: MDXLayout} = props.components || ({});

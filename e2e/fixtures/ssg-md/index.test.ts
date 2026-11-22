@@ -122,6 +122,11 @@ test('llms should be enabled by default', async () => {
   for (const label of ['Top level', 'HTML container', 'Nested container']) {
     expect(nestedMd).toContain(`${label}: download ${releaseLink}.`);
   }
+  expect(nestedMd).toContain(`## ${releaseLink}\n`);
+  expect(nestedMd).toContain(`- Root list: download ${releaseLink} (4.2.0).`);
+  expect(nestedMd).toContain(`| ${releaseLink} | 4.2.0 |`);
+  expect(nestedMd).toContain(`Root emphasis: **${releaseLink}** (_4.2.0_).`);
+  expect(nestedMd).toContain(`> Root quote: download ${releaseLink} (4.2.0).`);
   expect(nestedMd).toContain(
     `HTML container: download ${releaseLink}.\n\nNext paragraph: version 4.2.0.`,
   );
