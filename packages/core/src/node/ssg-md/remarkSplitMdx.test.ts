@@ -49,12 +49,139 @@ describe('Markdown containing executable MDX', () => {
             Inline: Container,
             Drop: () => 'unexpected rendered component',
             Keep: () => 'kept',
+            span: () => 'unexpected span override',
+            Download: () => createElement('div', null, 'Download LynxExplorer'),
+            DownloadLink: () =>
+              createElement(
+                'div',
+                null,
+                createElement(
+                  'a',
+                  { href: 'https://example.com/download' },
+                  'LynxExplorer',
+                ),
+              ),
+            Paragraphs: () =>
+              createElement(
+                'div',
+                null,
+                createElement('p', null, 'First paragraph.'),
+                createElement('p', null, 'Second paragraph.'),
+              ),
             PlatformTabs: Object.assign(Container, { Tab: Container }),
           },
         }),
       )
     ).trim();
   }
+
+  const inlineOutputs = [
+    ['div', '<div id="download">Download LynxExplorer</div>'],
+    ['component returning div', '<Download />'],
+    ['fragment', '<><div>Download LynxExplorer</div></>'],
+    ['expression', '{<div>Download LynxExplorer</div>}'],
+    ['span control', '<span>Download LynxExplorer</span>'],
+  ];
+  const outputLocations = [
+    ['root', '', ''],
+    ['component container', '<Container>', '</Container>'],
+    ['HTML container', '<div>', '</div>'],
+  ];
+  const parseMarkdown = (markdown: string) =>
+    JSON.parse(
+      JSON.stringify(
+        unified().use(remarkParse).use(remarkGfm).parse(markdown),
+        (key, value) => (key === 'position' ? undefined : value),
+      ),
+    );
+
+  it.each(
+    outputLocations.flatMap(([location, open, close]) =>
+      inlineOutputs.map(([output, inline]) => ({
+        location,
+        open,
+        close,
+        output,
+        inline,
+      })),
+    ),
+  )(
+    'keeps inline output inside its Markdown structure: %j',
+    async ({ open, close, inline }) => {
+      const markdown = await renderMdx(`${open}
+
+Before ${inline}.
+
+## ${inline}
+
+2. **${inline}**
+
+> **${inline}**
+
+| Download | Version |
+| --- | --- |
+| **${inline}** | {version} |
+
+${close}`);
+      const expected = `Before Download LynxExplorer.
+
+## Download LynxExplorer
+
+2. **Download LynxExplorer**
+
+> **Download LynxExplorer**
+
+| Download | Version |
+| --- | --- |
+| **Download LynxExplorer** | 4.2.0 |`;
+      // Reparse to verify strong nodes, ordered-list ownership, and table cells.
+      expect(parseMarkdown(markdown)).toEqual(parseMarkdown(expected));
+      expect(markdown).toContain('2. **Download LynxExplorer**');
+    },
+  );
+
+  it.each(outputLocations)(
+    'preserves links returned inside inline blocks in a %s',
+    async (_location, open, close) => {
+      const markdown = await renderMdx(`${open}
+
+- **<DownloadLink />**.
+
+| Download | Version |
+| --- | --- |
+| <DownloadLink /> | {version} |
+
+${close}`);
+      expect(parseMarkdown(markdown)).toEqual(
+        parseMarkdown(`- **[LynxExplorer](https://example.com/download)**.
+
+| Download | Version |
+| --- | --- |
+| [LynxExplorer](https://example.com/download) | 4.2.0 |`),
+      );
+    },
+  );
+
+  it.each(outputLocations)(
+    'preserves flow output and paragraph boundaries in a %s',
+    async (_location, open, close) => {
+      const markdown = await renderMdx(`${open}
+
+Before.
+
+<Paragraphs />
+
+After.
+
+${close}`);
+      expect(parseMarkdown(markdown)).toEqual(
+        parseMarkdown(
+          'Before.\n\nFirst paragraph.\n\nSecond paragraph.\n\nAfter.',
+        ),
+      );
+      expect(markdown).toContain('First paragraph.\n\nSecond paragraph.');
+    },
+  );
 
   it.each([
     ['top level', '', ''],
@@ -329,7 +456,7 @@ ${close}`,
           },
         ),
       );
-      expect(result).toContain('"}<Fragment />{" | 示例 |\\n"}');
+      expect(result).toContain('"}<span><Fragment /></span>{" | 示例 |\\n"}');
     },
   );
 
@@ -369,7 +496,7 @@ Before <Keep /> and <Drop /> after.
         ),
       );
       expect(result).toContain(
-        '{"Before "}<Keep />{" and <Drop /> after.\\n"}',
+        '{"Before "}<span><Keep /></span>{" and <Drop /> after.\\n"}',
       );
     },
   );
@@ -593,7 +720,7 @@ export function Thing() {
         return <>World</>;
       }
       function _createMdxContent(props) {
-        return <><>{"# Hello "}<Thing />{" "}{a}{"\\n"}</>{"\\n"}{a}</>;
+        return <><>{"# Hello "}<span><Thing /></span>{" "}<span>{a}</span>{"\\n"}</>{"\\n"}{a}</>;
       }
       export default function MDXContent(props = {}) {
         const {wrapper: MDXLayout} = props.components || ({});
@@ -625,7 +752,7 @@ export function Thing() {
         return <>World</>;
       }
       function _createMdxContent(props) {
-        return <><>{"# Hello "}<Badge />{" "}<Thing />{" "}{a}{"\\n"}</>{"\\n"}{a}</>;
+        return <><>{"# Hello "}<span><Badge /></span>{" "}<span><Thing /></span>{" "}<span>{a}</span>{"\\n"}</>{"\\n"}{a}</>;
       }
       export default function MDXContent(props = {}) {
         const {wrapper: MDXLayout} = props.components || ({});
@@ -644,7 +771,7 @@ export function Thing() {
       "/*@jsxRuntime automatic*/
       /*@jsxImportSource react*/
       function _createMdxContent(props) {
-        return <><>{"# hello "}{window.foo}{"\\n"}</></>;
+        return <><>{"# hello "}<span>{window.foo}</span>{"\\n"}</></>;
       }
       export default function MDXContent(props = {}) {
         const {wrapper: MDXLayout} = props.components || ({});
@@ -663,7 +790,7 @@ export function Thing() {
       "/*@jsxRuntime automatic*/
       /*@jsxImportSource react*/
       function _createMdxContent(props) {
-        return <><>{"Hello "}{window.foo}{"\\n"}</></>;
+        return <><>{"Hello "}<span>{window.foo}</span>{"\\n"}</></>;
       }
       export default function MDXContent(props = {}) {
         const {wrapper: MDXLayout} = props.components || ({});
@@ -976,7 +1103,7 @@ Some text here.`;
       /*@jsxImportSource react*/
       import Foo from '@components';
       function _createMdxContent(props) {
-        return <><>{"# title "}<Foo />{"\\n"}</>{"\\n"}{"# title [link](./link)\\n"}{"\\n"}<>{"# title [link](./link) "}<Foo />{"\\n"}</>{"\\n"}{"Some text here.\\n"}</>;
+        return <><>{"# title "}<span><Foo /></span>{"\\n"}</>{"\\n"}{"# title [link](./link)\\n"}{"\\n"}<>{"# title [link](./link) "}<span><Foo /></span>{"\\n"}</>{"\\n"}{"Some text here.\\n"}</>;
       }
       export default function MDXContent(props = {}) {
         const {wrapper: MDXLayout} = props.components || ({});
@@ -998,7 +1125,7 @@ This is a <Button>click me</Button> and <Link href="/test">link</Link> example.`
       /*@jsxImportSource react*/
       import {Button, Link} from '@components';
       function _createMdxContent(props) {
-        return <><>{"This is a "}<Button>{"click me"}</Button>{" and "}<Link href="/test">{"link"}</Link>{" example.\\n"}</></>;
+        return <><>{"This is a "}<span><Button>{"click me"}</Button></span>{" and "}<span><Link href="/test">{"link"}</Link></span>{" example.\\n"}</></>;
       }
       export default function MDXContent(props = {}) {
         const {wrapper: MDXLayout} = props.components || ({});

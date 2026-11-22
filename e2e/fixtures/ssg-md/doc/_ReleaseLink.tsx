@@ -12,6 +12,10 @@ export function ReleaseLink() {
   return <a href={href}>{label}</a>;
 }
 
+export function Download() {
+  return <div>Download LynxExplorer</div>;
+}
+
 function Container({ children }: { children?: ReactNode }) {
   return <div>{children}</div>;
 }

@@ -241,6 +241,10 @@ function processJsxChildren(
  * 3. Marker positions split the serialized text into text expressions and the
  *    retained nodes. JSX re-enters processJsxElement for recursive processing
  *    and the existing includes/excludes rules; expressions keep their AST.
+ *    Inline nodes receive a span parent so the renderer does not insert block
+ *    separators around their output, even when a component returns a div.
+ *    This preserves the surrounding Markdown syntax without flattening any
+ *    block structure inside the component's output.
  *
  * Filtered inline JSX stays in the surrounding phrasing context:
  * `| <Drop /> | Example |` remains one table row, and `Download <Drop />.`
@@ -260,7 +264,7 @@ function processJsxChildren(
  * children equivalent to:
  *
  * ```tsx
- * <>{"Download "}<ReleaseLink />{" ("}{version}{").\n"}</>
+ * <>{"Download "}<span><ReleaseLink /></span>{" ("}<span>{version}</span>{").\n"}</>
  * ```
  *
  * @returns Markdown text expressions interleaved with retained MDX nodes,
@@ -341,11 +345,26 @@ function serializeMarkdownWithMdx(
       result.push(createTextExpression(markdown.slice(offset, match.index)));
     }
     const node = nodes[Number(match[1])];
-    result.push(
+    const processedNode =
       node.type === 'mdxJsxFlowElement' || node.type === 'mdxJsxTextElement'
         ? processJsxElement(node, importMap, options)
-        : node,
-    );
+        : node;
+    if (
+      node.type === 'mdxJsxTextElement' ||
+      node.type === 'mdxTextExpression'
+    ) {
+      result.push({
+        type: 'mdxJsxTextElement',
+        name: 'span',
+        attributes: [],
+        // Mark as explicit JSX so MDX cannot replace this renderer boundary
+        // through the user's components.span mapping.
+        data: { _mdxExplicitJsx: true } as MdxJsxTextElement['data'],
+        children: [processedNode] as MdxJsxTextElement['children'],
+      });
+    } else {
+      result.push(processedNode);
+    }
     offset = match.index + match[0].length;
   }
   if (offset < markdown.length) {

@@ -133,6 +133,13 @@ test('llms should be enabled by default', async () => {
   expect(nestedMd).toContain('Next nested paragraph: version 4.2.0.');
   expect(nestedMd).toContain('Code example: `<ReleaseLink /> {version}`.');
   expect(nestedMd).toContain('```mdx\n<ReleaseLink /> {version}\n```');
+  expect(nestedMd.match(/2\. \*\*Download LynxExplorer\*\*/g)).toHaveLength(2);
+  for (const label of ['Root component', 'Steps component']) {
+    expect(nestedMd).toContain(`${label}: **Download LynxExplorer**.`);
+  }
+  expect(
+    nestedMd.match(/\| \*\*Download LynxExplorer\*\* \| 4\.2\.0 \|/g),
+  ).toHaveLength(4);
 
   const nestedHtml = await fs.readFile(
     path.join(docBuildDir, 'nested-inline.html'),
