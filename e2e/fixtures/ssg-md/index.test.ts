@@ -113,6 +113,35 @@ test('llms should be enabled by default', async () => {
   expect(componentsMd).toContain('This is **mdx fragment**.');
   expect(componentsMd).toContain('This is a component from tsx');
 
+  const nestedMd = await fs.readFile(
+    path.join(docBuildDir, 'nested-inline.md'),
+    'utf-8',
+  );
+  const releaseUrl = 'https://github.com/lynx-family/lynx/releases/tag/4.2.0';
+  const releaseLink = `[Lynx 4.2.0](${releaseUrl})`;
+  for (const label of ['Top level', 'HTML container', 'Nested container']) {
+    expect(nestedMd).toContain(`${label}: download ${releaseLink}.`);
+  }
+  expect(nestedMd).toContain(
+    `HTML container: download ${releaseLink}.\n\nNext paragraph: version 4.2.0.`,
+  );
+  expect(nestedMd).toContain('Next nested paragraph: version 4.2.0.');
+  expect(nestedMd).toContain('Code example: `<ReleaseLink /> {version}`.');
+  expect(nestedMd).toContain('```mdx\n<ReleaseLink /> {version}\n```');
+
+  const nestedHtml = await fs.readFile(
+    path.join(docBuildDir, 'nested-inline.html'),
+    'utf-8',
+  );
+  for (const label of ['Top level', 'HTML container', 'Nested container']) {
+    expect(nestedHtml).toContain(
+      `<p>${label}: download <a href="${releaseUrl}">Lynx 4.2.0</a>.</p>`,
+    );
+  }
+  expect(nestedHtml.replaceAll('<!-- -->', '')).toContain(
+    '<p>Next nested paragraph: version 4.2.0.</p>',
+  );
+
   const llmsFullTxt = await fs.readFile(
     path.join(docBuildDir, 'llms-full.txt'),
     'utf-8',

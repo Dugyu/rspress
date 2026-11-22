@@ -1,0 +1,36 @@
+import { Steps } from '@rspress/core/theme';
+import { PlatformTabs, ReleaseLink } from './_ReleaseLink';
+
+export const version = '4.2.0';
+
+# Nested inline components
+
+Top level: download <ReleaseLink />.
+
+<div>
+
+HTML container: download <ReleaseLink />.
+
+Next paragraph: version {version}.
+
+</div>
+
+<Steps>
+
+1. Download the release.
+
+   <PlatformTabs><PlatformTabs.Tab>
+
+   Nested container: download <ReleaseLink />.
+
+   Next nested paragraph: version {version}.
+
+   Code example: `<ReleaseLink /> {version}`.
+
+   ```mdx
+   <ReleaseLink /> {version}
+   ```
+
+   </PlatformTabs.Tab></PlatformTabs>
+
+</Steps>

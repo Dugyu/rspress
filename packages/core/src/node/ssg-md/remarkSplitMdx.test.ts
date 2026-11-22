@@ -1,6 +1,12 @@
-import { compile } from '@mdx-js/mdx';
+import { compile, evaluate } from '@mdx-js/mdx';
 import { describe, expect, it } from '@rstest/core';
-import { remarkSplitMdx } from './remarkSplitMdx';
+import { createElement, type ReactNode } from 'react';
+import * as jsxRuntime from 'react/jsx-runtime';
+import { renderToMarkdownString } from 'react-render-to-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkParse from 'remark-parse';
+import { unified } from 'unified';
+import { remarkSplitMdx, type RemarkSplitMdxOptions } from './remarkSplitMdx';
 
 /**
  * Process MDX with custom remark plugin
@@ -17,6 +23,249 @@ export async function processMdx(source: string): Promise<string> {
 
   return code;
 }
+
+describe('Markdown inside JSX containers', () => {
+  const releaseLink =
+    '[Lynx 4.2.0](https://github.com/lynx-family/lynx/releases/tag/4.2.0)';
+  const Container = ({ children }: { children?: ReactNode }) => children;
+
+  async function renderMdx(
+    source: string,
+    options: RemarkSplitMdxOptions = {},
+  ) {
+    const { default: Content } = await evaluate(
+      `export const version = '4.2.0';\n\n${source}`,
+      {
+        ...jsxRuntime,
+        remarkPlugins: [remarkGfm, [remarkSplitMdx, options]],
+      },
+    );
+    return (
+      await renderToMarkdownString(
+        createElement(Content, {
+          components: {
+            ReleaseLink: () => releaseLink,
+            Container,
+            Inline: Container,
+            Drop: () => 'unexpected rendered component',
+            Keep: () => 'kept',
+            PlatformTabs: Object.assign(Container, { Tab: Container }),
+          },
+        }),
+      )
+    ).trim();
+  }
+
+  it.each([
+    ['top level', '', ''],
+    ['HTML container', '<div>', '</div>'],
+    ['custom container', '<Container>', '</Container>'],
+    ['fragment', '<>', '</>'],
+    [
+      'nested member component',
+      '<Container>\n<PlatformTabs>\n<PlatformTabs.Tab>\n<div>',
+      '</div>\n</PlatformTabs.Tab>\n</PlatformTabs>\n</Container>',
+    ],
+  ])('executes inline MDX in a %s', async (_name, open, close) => {
+    const markdown = await renderMdx(
+      `${open}\n\n下载 <ReleaseLink />，版本 {version}。\n\n${close}`,
+    );
+    expect(markdown).toBe(`下载 ${releaseLink}，版本 4.2.0。`);
+  });
+
+  it('preserves Markdown formatting and paragraph spacing', async () => {
+    const markdown = await renderMdx(`<Container>
+
+First paragraph.
+
+## Download <ReleaseLink />
+
+Use **<ReleaseLink />** and _{version}_ with [release notes](https://example.com).
+
+- Download <ReleaseLink />.
+- Version {version}.
+
+> Download <ReleaseLink />.
+
+Last paragraph.
+
+</Container>`);
+
+    expect(markdown).toBe(`First paragraph.
+
+## Download ${releaseLink}
+
+Use **${releaseLink}** and _4.2.0_ with [release notes](https://example.com).
+
+- Download ${releaseLink}.
+- Version 4.2.0.
+
+> Download ${releaseLink}.
+
+Last paragraph.`);
+  });
+
+  it('keeps adjacent plain Markdown paragraphs separate', async () => {
+    expect(
+      await renderMdx(
+        '<div>\n\nFirst paragraph.\n\nSecond paragraph.\n\n</div>',
+      ),
+    ).toBe('First paragraph.\n\nSecond paragraph.');
+  });
+
+  it('keeps code examples literal alongside executable MDX', async () => {
+    const markdown = await renderMdx(`<div>
+
+Example: \`<ReleaseLink /> {version}\`.
+
+\`\`\`mdx
+<ReleaseLink /> {version}
+\`\`\`
+
+Actual: <ReleaseLink /> {version}.
+
+</div>`);
+
+    expect(markdown).toBe(`Example: \`<ReleaseLink /> {version}\`.
+
+\`\`\`mdx
+<ReleaseLink /> {version}
+\`\`\`
+
+Actual: ${releaseLink} 4.2.0.`);
+  });
+
+  const inlineFilters: RemarkSplitMdxOptions[] = [
+    { excludes: [[['Drop'], '@components']] },
+    { includes: [[['Container', 'Inline', 'Keep'], '@components']] },
+    {
+      includes: [[['Container', 'Inline', 'Keep', 'Drop'], '@components']],
+      excludes: [[['Drop'], '@components']],
+    },
+  ];
+
+  it.each(inlineFilters)(
+    'preserves table rows and columns around filtered inline JSX: %j',
+    async options => {
+      const markdown = await renderMdx(
+        `<Container>
+
+| 下载 | 说明 |
+| --- | --- |
+| <Drop /> | 示例 |
+| <Drop>下载</Drop> | 配对标签 |
+| <Drop>before <Keep /> after</Drop> | 嵌套组件 |
+| <Inline>before <Drop /> after</Inline> | 保留父组件 |
+| 普通行 | <Drop /> |
+
+</Container>`,
+        options,
+      );
+      const tree = unified().use(remarkParse).use(remarkGfm).parse(markdown);
+      const table = tree.children.find(node => node.type === 'table');
+      expect(table).toBeDefined();
+      expect(
+        table?.children.map(row =>
+          row.children.map(cell =>
+            cell.children
+              .map(child => ('value' in child ? child.value : ''))
+              .join(''),
+          ),
+        ),
+      ).toEqual([
+        ['下载', '说明'],
+        ['<Drop />', '示例'],
+        ['<Drop>下载</Drop>', '配对标签'],
+        ['<Drop>before kept after</Drop>', '嵌套组件'],
+        ['before <Drop /> after', '保留父组件'],
+        ['普通行', '<Drop />'],
+      ]);
+    },
+  );
+
+  it.each(inlineFilters)(
+    'preserves punctuation and spaces around filtered inline JSX: %j',
+    async options => {
+      expect(
+        await renderMdx(
+          `<Container>
+
+下载 <Drop />，版本 {version}；<Drop>before <Keep /> after</Drop>。强调 **<Drop />**。
+
+</Container>`,
+          options,
+        ),
+      ).toBe(
+        '下载 <Drop />，版本 4.2.0；<Drop>before kept after</Drop>。强调 **<Drop />**。',
+      );
+    },
+  );
+
+  it('keeps imported MDX fragments executable inside filtered table cells', async () => {
+    const result = String(
+      await compile(
+        `import Fragment from './fragment.mdx';
+
+<Container>
+
+| 下载 | 说明 |
+| --- | --- |
+| <Fragment /> | 示例 |
+
+</Container>`,
+        {
+          remarkPlugins: [
+            remarkGfm,
+            [remarkSplitMdx, { excludes: [[['Fragment'], './fragment.mdx']] }],
+          ],
+          jsx: true,
+        },
+      ),
+    );
+    expect(result).toContain('"}<Fragment />{" | 示例 |\\n"}');
+  });
+
+  it('preserves authored whitespace inside inline containers', async () => {
+    expect(
+      await renderMdx(`<Container>
+
+Before <Inline> left
+middle <Keep /> more
+right </Inline> after.
+
+</Container>`),
+    ).toBe('Before  left\nmiddle kept more\nright  after.');
+  });
+
+  it.each([
+    { includes: [[['Container', 'Keep'], '@components']] },
+    { excludes: [[['Drop'], '@components']] },
+    {
+      includes: [[['Container', 'Keep', 'Drop'], '@components']],
+      excludes: [[['Drop'], '@components']],
+    },
+    { includes: [[['Keep'], '@components']] },
+  ])(
+    'applies import filters to nested inline components: %j',
+    async options => {
+      const result = String(
+        await compile(
+          `import { Container, Keep, Drop } from '@components';
+
+<Container>
+
+Before <Keep /> and <Drop /> after.
+
+</Container>`,
+          { remarkPlugins: [[remarkSplitMdx, options]], jsx: true },
+        ),
+      );
+      expect(result).toContain(
+        '{"Before "}<Keep />{" and <Drop /> after.\\n"}',
+      );
+    },
+  );
+});
 
 describe('mdx-to-md-loader', () => {
   it('should transform MDX with import and JSX component to template literal', async () => {
@@ -641,7 +890,7 @@ This is a <Button>click me</Button> and <Link href="/test">link</Link> example.`
       /*@jsxImportSource react*/
       import {Button, Link} from '@components';
       function _createMdxContent(props) {
-        return <><>{"This is a "}<Button>{"click me\\n"}</Button>{" and "}<Link href="/test">{"link\\n"}</Link>{" example."}</></>;
+        return <><>{"This is a "}<Button>{"click me"}</Button>{" and "}<Link href="/test">{"link"}</Link>{" example."}</></>;
       }
       export default function MDXContent(props = {}) {
         const {wrapper: MDXLayout} = props.components || ({});
