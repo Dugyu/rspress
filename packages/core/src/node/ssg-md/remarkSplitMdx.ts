@@ -62,6 +62,31 @@ export function remarkSplitMdx(
     const newChildren: RootContent[] = [];
     const { importMap, esmNodes } = collectEsmMetadata(tree);
 
+    // MDX unwraps paragraphs containing only JSX/expressions before user
+    // remark plugins run. GFM emits a checkbox only if the list item's first
+    // child is a paragraph. Restore that context for an unwrapped task label.
+    visit(tree, 'listItem', node => {
+      const head = node.children[0];
+      if (
+        typeof node.checked === 'boolean' &&
+        (head?.type === 'mdxJsxFlowElement' ||
+          head?.type === 'mdxFlowExpression')
+      ) {
+        node.children[0] = {
+          type: 'paragraph',
+          children: [
+            {
+              ...head,
+              type:
+                head.type === 'mdxJsxFlowElement'
+                  ? 'mdxJsxTextElement'
+                  : 'mdxTextExpression',
+            } as MdxJsxTextElement | MdxTextExpression,
+          ],
+        };
+      }
+    });
+
     // Keep ESM declarations available to the MDX compiler. They are omitted
     // only when content is stringified to Markdown.
     newChildren.push(...esmNodes);
@@ -258,6 +283,8 @@ function processJsxChildren(
  * Code and inline-code nodes serialize their literal values, so component
  * examples inside them never enter the MDX handlers. All markers are resolved
  * here, before compilation continues; no runtime string parsing is involved.
+ * This validates executable-node transport. Delimiter decisions still precede
+ * component execution, so substitution can change the final Markdown semantics.
  *
  * @example
  * A paragraph containing `Download <ReleaseLink /> ({version}).` produces
@@ -282,9 +309,11 @@ function serializeMarkdownWithMdx(
     | MdxFlowExpression
     | MdxTextExpression;
 
-  // A fresh namespace avoids confusing authored text or another serialization
-  // pass with these markers. Alphanumeric characters survive Markdown escaping
-  // and can be matched without escaping regular-expression metacharacters.
+  // The interior identifies this serialization pass and contains no Markdown
+  // syntax. Attention handlers can still encode the first/last letter, either
+  // directly or through containerPhrasing's sibling-boundary handling.
+  // Only those two known character references are part of the marker grammar;
+  // never decode references in authored Markdown to find a marker.
   // The UUID is temporary bookkeeping, not a runtime ID or part of the output.
   const prefix = `rspress${randomUUID().replaceAll('-', '')}mdx`;
   const nodes: MdxNode[] = [];
@@ -337,14 +366,32 @@ function serializeMarkdownWithMdx(
   const markdown = inlineMarkdown ?? serialized;
 
   const result: RootContent[] = [];
+  const restored = new Set<number>();
   let offset = 0;
+  // Marker grammar: "r" + prefix.slice(1) + decimal node index + "en" + "d".
+  // U+0072 is "r"; U+0064 is "d". mdast-util-to-markdown's
+  // encodeCharacterReference emits them as "&#x72;" and "&#x64;".
+  // Emphasis/strong and containerPhrasing can encode either boundary, so both
+  // forms are accepted independently. slice(1) omits the separately matched
+  // leading "r"; "en" is the unchanged part of the marker's "end" suffix.
+  // This depends on upstream rewriting only the edges in that exact format,
+  // not a public guarantee of character-reference spelling. Recheck these
+  // handlers on dependency upgrades; the completeness check below rejects
+  // unsupported rewrites instead of leaking markers into the output.
   for (const match of markdown.matchAll(
-    new RegExp(`${prefix}(\\d+)end`, 'g'),
+    new RegExp(`(?:r|&#x72;)${prefix.slice(1)}(\\d+)en(?:d|&#x64;)`, 'g'),
   )) {
     if (match.index > offset) {
       result.push(createTextExpression(markdown.slice(offset, match.index)));
     }
-    const node = nodes[Number(match[1])];
+    const index = Number(match[1]);
+    const node = nodes[index];
+    if (!node || restored.has(index)) {
+      throw new Error(
+        '[SSG-MD] Invalid or duplicate MDX marker during Markdown serialization.',
+      );
+    }
+    restored.add(index);
     const processedNode =
       node.type === 'mdxJsxFlowElement' || node.type === 'mdxJsxTextElement'
         ? processJsxElement(node, importMap, options)
@@ -366,6 +413,13 @@ function serializeMarkdownWithMdx(
       result.push(processedNode);
     }
     offset = match.index + match[0].length;
+  }
+  // A dependency change must fail at compilation instead of silently dropping
+  // an executable component or exposing temporary identifiers in the document.
+  if (restored.size !== nodes.length) {
+    throw new Error(
+      '[SSG-MD] Could not restore all MDX markers after Markdown serialization.',
+    );
   }
   if (offset < markdown.length) {
     result.push(createTextExpression(markdown.slice(offset)));

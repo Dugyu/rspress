@@ -1,5 +1,7 @@
+// cspell:ignore abcdefmdx spress
 import { compile, evaluate } from '@mdx-js/mdx';
 import { describe, expect, it } from '@rstest/core';
+import type { Root } from 'mdast';
 import { createElement, type ReactNode } from 'react';
 import * as jsxRuntime from 'react/jsx-runtime';
 import { renderToMarkdownString } from 'react-render-to-markdown';
@@ -498,6 +500,236 @@ Before <Keep /> and <Drop /> after.
       expect(result).toContain(
         '{"Before "}<span><Keep /></span>{" and <Drop /> after.\\n"}',
       );
+    },
+  );
+});
+
+describe('MDX marker protocol', () => {
+  const locations = [
+    ['root', '', ''],
+    ['flow container', '<Container>\n\n', '\n\n</Container>'],
+    ['inline container', 'Before <Inline>', '</Inline> after.'],
+  ];
+  const parse = (markdown: string) =>
+    JSON.parse(
+      JSON.stringify(
+        unified().use(remarkParse).use(remarkGfm).parse(markdown),
+        (key, value) => (key === 'position' ? undefined : value),
+      ),
+    );
+
+  async function render(
+    source: string,
+    calls: string[],
+    options: RemarkSplitMdxOptions = {},
+    transform?: (tree: Root) => void,
+  ) {
+    const { default: Content } = await evaluate(source, {
+      ...jsxRuntime,
+      remarkPlugins: [
+        remarkGfm,
+        ...(transform ? [() => transform] : []),
+        [remarkSplitMdx, options],
+      ],
+    });
+    const component = (name: string) => () => {
+      calls.push(name);
+      return name;
+    };
+    return (
+      await renderToMarkdownString(
+        createElement(Content, {
+          components: {
+            X: component('X'),
+            Y: component('Y'),
+            Container: ({ children }: { children?: ReactNode }) => children,
+            Inline: ({ children }: { children?: ReactNode }) => children,
+            Drop: component('Drop'),
+          },
+        }),
+      )
+    ).trim();
+  }
+
+  const attentionCases = [
+    { source: '<Y/>*<X/>* b', calls: ['Y', 'X'] },
+    { source: 'a *<X/>*<Y/>', calls: ['X', 'Y'] },
+    { source: '<Y/>*<X/>*<Y/>', calls: ['Y', 'X', 'Y'] },
+    { source: '<Y/> *<X/>* b', calls: ['Y', 'X'] },
+    { source: 'a *<X/>* b', calls: ['X'] },
+    { source: '<Y/>**!** b', calls: ['Y'] },
+    { source: 'a **!**<Y/>', calls: ['Y'] },
+    { source: '<Y/>**[link](https://example.com)** b', calls: ['Y'] },
+    { source: '<Y/>**<X/>** b', calls: ['Y', 'X'] },
+    { source: '<Y/>~~<X/>~~ b', calls: ['Y', 'X'] },
+    { source: '{<Y/>}*{<X/>}* b', calls: ['Y', 'X'] },
+    { source: '<Y/>*{<X/>}* b', calls: ['Y', 'X'] },
+  ];
+  it.each(
+    locations.flatMap(([location, open, close]) =>
+      attentionCases.map(test => ({ ...test, location, open, close })),
+    ),
+  )(
+    'restores executable nodes exactly once across attention: %j',
+    async test => {
+      const calls: string[] = [];
+      const markdown = await render(
+        test.open + test.source + test.close,
+        calls,
+      );
+      // This checks transport, independently of post-render delimiter semantics.
+      expect(calls).toEqual(test.calls);
+      expect(markdown).not.toMatch(/rspress[0-9a-f]{32}mdx/);
+    },
+  );
+
+  const structures = [
+    ['paragraph and text', 'Before <X/> and {7}.', 'Before X and 7.'],
+    ['heading', '## <X/> and {7}', '## X and 7'],
+    ['emphasis', 'a *<X/>* b', 'a *X* b'],
+    ['strong', 'a **<X/>** b', 'a **X** b'],
+    ['delete', 'a ~~<X/>~~ b', 'a ~~X~~ b'],
+    [
+      'link',
+      '[<X/>](https://example.com "Title")',
+      '[X](https://example.com "Title")',
+    ],
+    [
+      'link reference and definition',
+      '[<X/>][id]\n\n[id]: https://example.com "Title"',
+      '[X][id]\n\n[id]: https://example.com "Title"',
+    ],
+    [
+      'image and image reference',
+      '![literal &lt;X/>](image.png "Title") <X/> ![literal &#123;7}][img]\n\n[img]: image.png',
+      '![literal <X/>](image.png "Title") X ![literal {7}][img]\n\n[img]: image.png',
+    ],
+    ['list and list item', '3. <X/>\n   - **{7}**', '3. X\n   - **7**'],
+    ['task list', '- [x] <X/>\n- [ ] {7}', '- [x] X\n- [ ] 7'],
+    ['blockquote', '> <X/>\n>\n> {7}', '> X\n>\n> 7'],
+    [
+      'footnote definition and reference',
+      'Note[^id].\n\n[^id]: <X/> and {7}.\n\n    Another paragraph.',
+      'Note[^id].\n\n[^id]: X and 7.\n\n    Another paragraph.',
+    ],
+    [
+      'table, row, and cell',
+      '| Left | Right |\n| :--- | ---: |\n| **<X/>** | {7} |',
+      '| Left | Right |\n| :--- | ---: |\n| **X** | 7 |',
+    ],
+    ['hard break', 'Before <X/>\\\nafter {7}.', 'Before X\\\nafter 7.'],
+    ['soft break', 'Before <X/>\nafter {7}.', 'Before X\nafter 7.'],
+    [
+      'inline code and code',
+      '`<Y/> {7}` <X/>\n\n```mdx\n<Y/> {7}\n```',
+      '`<Y/> {7}` X\n\n```mdx\n<Y/> {7}\n```',
+    ],
+    [
+      'thematic break',
+      '<X/> here.\n\n---\n\n{7} after.',
+      'X here.\n\n---\n\n7 after.',
+    ],
+    [
+      'flow JSX and expression',
+      '<div><X/></div>\n\n{<p>7</p>}\n\n<div><Y/></div>',
+      'X\n\n7\n\nY',
+    ],
+    [
+      'ESM and text expression',
+      'export const value = 7;\n\n<X/> and {value}.',
+      'X and 7.',
+    ],
+    [
+      'filtered JSX with retained descendant',
+      'Before <Drop><X/></Drop> and {7}.',
+      'Before <Drop>X</Drop> and 7.',
+    ],
+    [
+      'literal marker-like text and references',
+      'rspress0123456789abcdef0123456789abcdefmdx0end &#x72; <X/>',
+      'rspress0123456789abcdef0123456789abcdefmdx0end r X',
+    ],
+  ];
+  it.each(
+    locations.slice(0, 2).flatMap(([location, open, close]) =>
+      structures.map(([name, source, expected]) => ({
+        location,
+        open,
+        close,
+        name,
+        source,
+        expected,
+      })),
+    ),
+  )(
+    'preserves Markdown structure through serializer handlers: %j',
+    async test => {
+      const calls: string[] = [];
+      const markdown = await render(
+        test.open + test.source + test.close,
+        calls,
+        {
+          excludes: [[['Drop'], '@components']],
+        },
+      );
+      expect(parse(markdown)).toEqual(parse(test.expected));
+      expect(calls).toEqual(
+        test.name === 'flow JSX and expression' ? ['X', 'Y'] : ['X'],
+      );
+    },
+  );
+
+  it('serializes HTML and the hardBreak alias introduced by remark plugins', async () => {
+    const calls: string[] = [];
+    const markdown = await render('Before <X/> after.', calls, {}, tree => {
+      const paragraph = tree.children[0];
+      if (paragraph.type !== 'paragraph') {
+        throw new Error('Expected a paragraph fixture.');
+      }
+      paragraph.children.splice(
+        2,
+        0,
+        { type: 'html', value: '<i>literal</i>' },
+        // mdast-util-to-markdown supports this legacy handler alias.
+        { type: 'hardBreak' } as any,
+      );
+    });
+    // The synthetic AST contains a leading space after the break.
+    expect(parse(markdown)).toEqual(
+      parse('Before X<i>literal</i>\\\n&#x20;after.'),
+    );
+    expect(calls).toEqual(['X']);
+  });
+
+  it('keeps multi-digit marker IDs ordered without decoding authored code', async () => {
+    const calls: string[] = [];
+    const literal = '&#x72;spress0123456789abcdef0123456789abcdefmdx0en&#x64;';
+    const markdown = await render(
+      `\`${literal}\` ${Array.from({ length: 12 }, () => '<X/>').join(' ')}`,
+      calls,
+    );
+    expect(markdown).toBe(
+      `\`${literal}\` ${Array.from({ length: 12 }, () => 'X').join(' ')}`,
+    );
+    expect(calls).toEqual(Array.from({ length: 12 }, () => 'X'));
+  });
+
+  // These assertions describe the intended semantics, not the current output.
+  // They deliberately keep the local draft's unresolved runtime boundary visible.
+  it.each([
+    ['adjacent emphasis', '<Y/>*<X/>* b', '&#89;_&#88;_ b'],
+    ['adjacent strong punctuation', '<Y/>**!** b', '&#89;**!** b'],
+    [
+      'adjacent strong link',
+      '<Y/>**[link](https://example.com)** b',
+      '&#89;**[link](https://example.com)** b',
+    ],
+    ['expression emphasis', '{<Y/>}*{<X/>}* b', '&#89;_&#88;_ b'],
+  ])(
+    'preserves resolved boundary semantics for %s',
+    async (_name, source, expected) => {
+      const markdown = await render(source, []);
+      expect(parse(markdown)).toEqual(parse(expected));
     },
   );
 });

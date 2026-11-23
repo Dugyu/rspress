@@ -1,14 +1,31 @@
 diff --git a/dist/node/ssg-md/remarkSplitMdx.js b/dist/node/ssg-md/remarkSplitMdx.js
-index dba67dcae5497038ca42884559cf3e729da06874..1cb51044df8383e08d99c600c8c9f132066de60e 100644
+index dba67dcae5497038ca42884559cf3e729da06874..6b7c8d9c43b8aaa6e2da2273079f006f07a17f90 100644
 --- a/dist/node/ssg-md/remarkSplitMdx.js
 +++ b/dist/node/ssg-md/remarkSplitMdx.js
-@@ -1,3 +1,5 @@
+@@ -1,8 +1,22 @@
 +import { randomUUID } from "node:crypto";
 +import { mdxToMarkdown } from "mdast-util-mdx";
  import { unified, visit, remark_gfm, remark_mdx, remark_stringify } from "../../tx~0.js";
  function remarkSplitMdx(options = {}) {
      return (tree)=>{
-@@ -14,35 +16,44 @@ function remarkSplitMdx(options = {}) {
+         const newChildren = [];
+         const { importMap, esmNodes } = collectEsmMetadata(tree);
++        visit(tree, 'listItem', (node)=>{
++            const head = node.children[0];
++            if ('boolean' == typeof node.checked && (head?.type === 'mdxJsxFlowElement' || head?.type === 'mdxFlowExpression')) node.children[0] = {
++                type: 'paragraph',
++                children: [
++                    {
++                        ...head,
++                        type: 'mdxJsxFlowElement' === head.type ? 'mdxJsxTextElement' : 'mdxTextExpression'
++                    }
++                ]
++            };
++        });
+         newChildren.push(...esmNodes);
+         for (const node of tree.children){
+             if ('mdxjsEsm' === node.type) continue;
+@@ -14,35 +28,44 @@ function remarkSplitMdx(options = {}) {
                  newChildren.push(processJsxElement(node, importMap, options));
                  continue;
              }
@@ -68,7 +85,7 @@ index dba67dcae5497038ca42884559cf3e729da06874..1cb51044df8383e08d99c600c8c9f132
          textBuffer = [];
      };
      for (const child of node.children)if ('mdxJsxFlowElement' === child.type || 'mdxJsxTextElement' === child.type) {
-@@ -58,6 +69,66 @@ function processJsxChildren(node, importMap, options) {
+@@ -58,6 +81,71 @@ function processJsxChildren(node, importMap, options) {
          children: processedChildren
      };
  }
@@ -110,10 +127,14 @@ index dba67dcae5497038ca42884559cf3e729da06874..1cb51044df8383e08d99c600c8c9f132
 +    });
 +    const markdown = inlineMarkdown ?? serialized;
 +    const result = [];
++    const restored = new Set();
 +    let offset = 0;
-+    for (const match of markdown.matchAll(new RegExp(`${prefix}(\\d+)end`, 'g'))){
++    for (const match of markdown.matchAll(new RegExp(`(?:r|&#x72;)${prefix.slice(1)}(\\d+)en(?:d|&#x64;)`, 'g'))){
 +        if (match.index > offset) result.push(createTextExpression(markdown.slice(offset, match.index)));
-+        const node = nodes[Number(match[1])];
++        const index = Number(match[1]);
++        const node = nodes[index];
++        if (!node || restored.has(index)) throw new Error('[SSG-MD] Invalid or duplicate MDX marker during Markdown serialization.');
++        restored.add(index);
 +        const processedNode = 'mdxJsxFlowElement' === node.type || 'mdxJsxTextElement' === node.type ? processJsxElement(node, importMap, options) : node;
 +        if ('mdxJsxTextElement' === node.type || 'mdxTextExpression' === node.type) result.push({
 +            type: 'mdxJsxTextElement',
@@ -129,13 +150,14 @@ index dba67dcae5497038ca42884559cf3e729da06874..1cb51044df8383e08d99c600c8c9f132
 +        else result.push(processedNode);
 +        offset = match.index + match[0].length;
 +    }
++    if (restored.size !== nodes.length) throw new Error('[SSG-MD] Could not restore all MDX markers after Markdown serialization.');
 +    if (offset < markdown.length) result.push(createTextExpression(markdown.slice(offset)));
 +    return result;
 +}
  function getComponentName(name) {
      if (!name) return null;
      if ('string' == typeof name) {
-@@ -70,39 +141,6 @@ function getComponentName(name) {
+@@ -70,39 +158,6 @@ function getComponentName(name) {
      }
      return null;
  }
@@ -175,7 +197,7 @@ index dba67dcae5497038ca42884559cf3e729da06874..1cb51044df8383e08d99c600c8c9f132
  function buildMdxFlowExpressionFragment(node) {
      const children = node.children;
      const hasJsxChildren = children?.some((child)=>'mdxJsxFlowElement' === child.type || 'mdxJsxTextElement' === child.type || 'mdxFlowExpression' === child.type || 'mdxTextExpression' === child.type);
-@@ -193,15 +231,20 @@ function serializeClosingTag(node) {
+@@ -193,15 +248,20 @@ function serializeClosingTag(node) {
      if (!name) return '';
      return `</${name}>`;
  }
@@ -205,7 +227,7 @@ index dba67dcae5497038ca42884559cf3e729da06874..1cb51044df8383e08d99c600c8c9f132
  function serializeNodeToMarkdown(node) {
      const tempRoot = {
          type: 'root',
-@@ -235,7 +278,7 @@ function collectEsmMetadata(tree) {
+@@ -235,7 +295,7 @@ function collectEsmMetadata(tree) {
  }
  function shouldKeepJsxElement(nameField, importMap, options) {
      const componentName = getComponentName(nameField);
